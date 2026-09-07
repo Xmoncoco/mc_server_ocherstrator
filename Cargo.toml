@@ -1,0 +1,14 @@
+[package]
+name = "mcserv"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+portable-pty = "0.9.0"
+reqwest = {version = "0.13.4", features =["json"]}
+rocket = "0.5.1"
+tokio = {version = "1.53.1", features = ["full"]}
+nix = { version = "0.29", features = ["term", "process", "fs"] }
+uuid = {version = "1.26.0", features =["v4"]}
+serde = "1.0.229"
+toml = "1.1.5"
