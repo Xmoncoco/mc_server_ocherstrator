@@ -1,59 +1,23 @@
-use std::fs::File;
-use std::os::fd::{AsFd, AsRawFd};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use nix::pty::openpty;
+#[macro_use]
+extern crate rocket;
 
-use crate::server_management::server;
-
-mod api_server {
-    pub mod auth {
-        pub mod auth;
-    }
-}
+use crate::server_management::server::ServerManager;
+use rocket::fairing::AdHoc;
+use std::time::Duration;
 
 mod server_management {
     pub mod server;
+    pub mod tty;
 }
 
-pub struct PtySession {
-    pub pts_path: String,
-    pub child: Child,
-    pub master: File,
+use crate::api_server::api;
+
+mod api_server {
+    pub mod api;
+    pub mod auth;
 }
 
-pub fn spawn_in_pty(
-    program: &Path,
-    working_dir: &Path,
-    args: &[&str],
-) -> Result<PtySession, Box<dyn std::error::Error>> {
-    let pty = openpty(None, None)?;
-
-    let pts_path = std::fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd()))?
-        .to_string_lossy()
-        .into_owned();
-
-    let slave_in: Stdio = File::from(pty.slave.as_fd().try_clone_to_owned()?).into();
-    let slave_out: Stdio = File::from(pty.slave.as_fd().try_clone_to_owned()?).into();
-    let slave_err: Stdio = File::from(pty.slave).into();
-
-    let child = Command::new(program)
-        .current_dir(working_dir)
-        .args(args)
-        .stdin(slave_in)
-        .stdout(slave_out)
-        .stderr(slave_err)
-        .spawn()?;
-
-    let master = File::from(pty.master);
-
-    Ok(PtySession {
-        pts_path,
-        child,
-        master,
-    })
-}
-
+/*
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Démarrage du gestionnaire de serveur...");
@@ -84,4 +48,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}*/
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .manage(ServerManager::load())
+        .attach(AdHoc::on_shutdown("Arrêt des serveurs", |rocket| {
+            Box::pin(async move {
+                if let Some(mgr) = rocket.state::<ServerManager>() {
+                    mgr.shutdown_all(Duration::from_secs(30)).await;
+                }
+            })
+        }))
+        .mount("/", api::get_routes())
 }
