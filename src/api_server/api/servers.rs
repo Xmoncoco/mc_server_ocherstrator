@@ -58,6 +58,13 @@ pub struct ServerSettings {
     max_ram: Option<usize>,
     args: Option<Vec<String>>,
 }
+
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub struct SetLaunchFile {
+    /// Chemin relatif au dossier de l'instance.
+    path: String,
+}
 #[get("/servers")]
 pub(super) fn server_list(_auth: KeyAuthUser, mgr: &State<ServerManager>) -> Json<Vec<ServerInfo>> {
     Json(mgr.list())
@@ -174,6 +181,27 @@ pub(super) fn server_info(
     id: &str,
 ) -> ApiResult<Json<ServerInfo>> {
     mgr.info(id).map(Json).map_err(api_err)
+}
+
+#[get("/server/<id>/launch-files")]
+pub(super) fn server_launch_files(
+    _auth: KeyAuthUser,
+    mgr: &State<ServerManager>,
+    id: &str,
+) -> ApiResult<Json<Vec<String>>> {
+    mgr.launch_files(id).map(Json).map_err(api_err)
+}
+
+#[post("/server/<id>/launch-file", format = "json", data = "<req>")]
+pub(super) fn server_set_launch_file(
+    _auth: KeyAuthUser,
+    mgr: &State<ServerManager>,
+    id: &str,
+    req: Json<SetLaunchFile>,
+) -> ApiResult<Json<ServerInfo>> {
+    mgr.set_launch_file(id, &req.into_inner().path)
+        .map(Json)
+        .map_err(api_err)
 }
 
 #[delete("/server/<id>")]

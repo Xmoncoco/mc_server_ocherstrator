@@ -204,6 +204,41 @@ fn write_eula(path: &Path) -> Result<(), ServerError> {
 fn is_inside(path: &Path, parent: &Path) -> bool {
     path.starts_with(parent)
 }
+
+/// Valide un chemin relatif au dossier d'instance : pas d'absolu, pas de
+/// `..`, pas de préfixe Windows, et pas d'écriture dans `.mcserv`.
+fn sanitize_instance_path(raw: &str) -> Result<PathBuf, ServerError> {
+    let normalized = raw.trim().replace('\\', "/");
+    let path = Path::new(&normalized);
+    if normalized.is_empty() || path.is_absolute() {
+        return Err(ServerError::Invalid("Chemin de fichier invalide".into()));
+    }
+
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let text = part
+                    .to_str()
+                    .ok_or_else(|| ServerError::Invalid("Chemin non UTF-8".into()))?;
+                if text == ".mcserv" {
+                    return Err(ServerError::Invalid(
+                        "Le fichier de lancement ne peut pas être dans .mcserv".into(),
+                    ));
+                }
+                clean.push(part);
+            }
+            Component::CurDir => {}
+            _ => return Err(ServerError::Invalid("Chemin de fichier interdit".into())),
+        }
+    }
+
+    if clean.as_os_str().is_empty() {
+        return Err(ServerError::Invalid("Chemin de fichier invalide".into()));
+    }
+    Ok(clean)
+}
+
 impl Server {
     pub fn base_dir() -> PathBuf {
         crate::storage::data_dir()
@@ -626,6 +661,155 @@ impl Server {
             last_exit: self.last_exit.clone(),
         }
     }
+    /// Fichiers candidats au lancement, relatifs au dossier de l'instance.
+    ///
+    /// On regarde les fichiers utiles à la racine (jars, scripts, exécutables)
+    /// et les `unix_args.txt` de Forge/NeoForge sous `libraries/`. Le client
+    /// peut aussi saisir un autre chemin relatif.
+    pub fn launch_candidates(&self) -> Vec<String> {
+        let root = Path::new(&self.path);
+        let mut files: Vec<PathBuf> = Vec::new();
+
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_file() {
+                    continue;
+                }
+
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                let mut candidate = name.ends_with(".jar")
+                    || name.ends_with(".sh")
+                    || name.ends_with(".bat")
+                    || name.ends_with(".exe")
+                    || name == "unix_args.txt"
+                    || name == "win_args.txt";
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if !candidate {
+                        candidate = entry
+                            .metadata()
+                            .map(|m| m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false);
+                    }
+                }
+
+                if candidate {
+                    files.push(path);
+                }
+            }
+        }
+
+        fn walk_args(dir: &Path, depth: usize, files: &mut Vec<PathBuf>) {
+            if depth > 10 {
+                return;
+            }
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    walk_args(&entry.path(), depth + 1, files);
+                } else if file_type.is_file()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("unix_args.txt")
+                {
+                    files.push(entry.path());
+                }
+            }
+        }
+
+        let libraries = root.join("libraries");
+        if libraries.is_dir() {
+            walk_args(&libraries, 0, &mut files);
+        }
+
+        let mut out: Vec<String> = files
+            .iter()
+            .filter_map(|path| path.strip_prefix(root).ok())
+            .filter_map(|path| path.to_str())
+            .map(|path| path.replace('\\', "/"))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Change le fichier de lancement (chemin relatif à l'instance).
+    ///
+    /// - `.jar` : Java avec `-jar` ;
+    /// - `unix_args.txt` : arguments Forge/NeoForge (`java @fichier`) ;
+    /// - tout le reste : exécuté directement (script, binaire).
+    pub fn set_launch_file(&mut self, raw: &str) -> Result<(), ServerError> {
+        if self.is_running() {
+            return Err(ServerError::AlreadyRunning);
+        }
+
+        let relative = sanitize_instance_path(raw)?;
+        let instance = fs::canonicalize(&self.path)
+            .map_err(|e| ServerError::Internal(format!("Dossier d'instance illisible : {e}")))?;
+        let full = instance.join(&relative);
+        let canonical = fs::canonicalize(&full)
+            .map_err(|_| ServerError::Invalid(format!("Fichier introuvable : {raw}")))?;
+        if !canonical.starts_with(&instance) || !canonical.is_file() {
+            return Err(ServerError::Invalid(format!(
+                "Le fichier doit se trouver dans l'instance : {raw}"
+            )));
+        }
+
+        let name = canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let relative = relative.to_string_lossy().replace('\\', "/");
+
+        if name.ends_with(".jar") {
+            self.type_serv = TypeOfServ::JavaBased;
+            self.executable = relative;
+            self.launch_args = None;
+        } else if name == "unix_args.txt" {
+            self.type_serv = TypeOfServ::JavaBased;
+            self.executable = relative.clone();
+            self.launch_args = Some(relative);
+        } else if name == "win_args.txt" {
+            return Err(ServerError::Invalid(
+                "win_args.txt ne peut pas être lancé sur Linux ; utilise unix_args.txt".into(),
+            ));
+        } else if name.ends_with(".bat") {
+            return Err(ServerError::Invalid(
+                "Les fichiers .bat ne sont pas exécutables sur Linux".into(),
+            ));
+        } else {
+            self.type_serv = TypeOfServ::Executable;
+            self.executable = relative;
+            self.launch_args = None;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = fs::metadata(&canonical)?.permissions();
+                let mode = permissions.mode();
+                if mode & 0o111 == 0 {
+                    permissions.set_mode(mode | 0o111);
+                    fs::set_permissions(&canonical, permissions)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Supprime le dossier d'instance et le fichier meta.
     fn remove_files(&self) -> Result<(), ServerError> {
         let dir = Path::new(&self.path);

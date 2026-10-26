@@ -45,6 +45,20 @@ impl ServerManager {
         self.with(id, |s| Ok(s.info()))
     }
 
+    /// Fichiers de lancement proposés pour cette instance.
+    pub fn launch_files(&self, id: &str) -> Result<Vec<String>, ServerError> {
+        self.with(id, |s| Ok(s.launch_candidates()))
+    }
+
+    /// Change l'exécutable (chemin relatif à l'instance) et sauvegarde le meta.
+    pub fn set_launch_file(&self, id: &str, path: &str) -> Result<ServerInfo, ServerError> {
+        self.with(id, |s| {
+            s.set_launch_file(path)?;
+            s.save_meta().map_err(internal)?;
+            Ok(s.info())
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_manual(
         &self,

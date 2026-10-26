@@ -45,6 +45,8 @@ pub fn get_routes() -> Vec<Route> {
         server_create,
         server_upload,
         server_info,
+        server_launch_files,
+        server_set_launch_file,
         server_delete,
         server_settings,
         server_start,
