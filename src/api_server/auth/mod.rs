@@ -1,6 +1,6 @@
 pub mod auth_guard;
 
-use std::{env, fs, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use argon2::password_hash::PasswordHash;
 use argon2::{
@@ -26,8 +26,7 @@ pub struct User {
 }
 
 pub fn base_dir() -> PathBuf {
-    let home = env::var("HOME").expect("Variable $HOME introuvable");
-    PathBuf::from(home).join(".local/share/mcserv")
+    crate::storage::data_dir()
 }
 
 impl User {

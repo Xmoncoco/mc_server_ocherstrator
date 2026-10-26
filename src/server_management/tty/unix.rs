@@ -12,19 +12,20 @@ use std::{
 
 use nix::{
     fcntl::{FcntlArg, FdFlag, fcntl},
-    pty::{Winsize, openpty},
+    pty::{Winsize as NixWinsize, openpty},
     unistd::{setsid, ttyname},
 };
 
+use super::Winsize;
+
 // TIOCSWINSZ : change la taille du pty. Le noyau envoie ensuite SIGWINCH
 // au groupe de processus au premier plan.
-nix::ioctl_write_ptr_bad!(tiocswinsz, libc::TIOCSWINSZ, Winsize);
+nix::ioctl_write_ptr_bad!(tiocswinsz, libc::TIOCSWINSZ, NixWinsize);
 
-/// Construit une taille de terminal (en lignes / colonnes).
-pub fn winsize(rows: u16, cols: u16) -> Winsize {
-    Winsize {
-        ws_row: rows,
-        ws_col: cols,
+fn to_nix(size: Winsize) -> NixWinsize {
+    NixWinsize {
+        ws_row: size.rows,
+        ws_col: size.cols,
         ws_xpixel: 0,
         ws_ypixel: 0,
     }
@@ -49,6 +50,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let size = to_nix(size);
     let pty = openpty(Some(&size), None)?;
 
     // Empêche master et slave d'être hérités par les enfants. Les copies
@@ -96,6 +98,7 @@ where
 impl PtySession {
     /// Change la taille du terminal (fonctionne à tout moment).
     pub fn resize(&self, size: Winsize) -> io::Result<()> {
+        let size = to_nix(size);
         unsafe { tiocswinsz(self.master.as_raw_fd(), &size) }?;
         Ok(())
     }
@@ -161,7 +164,7 @@ mod tests {
             Path::new("sh"),
             Path::new("/tmp"),
             ["-c", "echo hello"],
-            winsize(24, 80),
+            super::super::winsize(24, 80),
         )
         .unwrap();
 
@@ -176,11 +179,11 @@ mod tests {
             Path::new("sleep"),
             Path::new("/tmp"),
             ["5"],
-            winsize(24, 80),
+            super::super::winsize(24, 80),
         )
         .unwrap();
 
-        session.resize(winsize(40, 120)).unwrap();
+        session.resize(super::super::winsize(40, 120)).unwrap();
         session.kill().unwrap();
     }
 }

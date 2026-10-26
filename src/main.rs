@@ -5,7 +5,11 @@ use crate::server_management::server::ServerManager;
 use rocket::fairing::AdHoc;
 use std::time::Duration;
 
+mod catalog;
+mod storage;
+
 mod server_management {
+    pub mod loaders;
     pub mod server;
     pub mod tty;
 }
@@ -52,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[launch]
 fn rocket() -> _ {
+    catalog::cleanup_temp();
     rocket::build()
         .manage(ServerManager::load())
         .attach(AdHoc::on_shutdown("Arrêt des serveurs", |rocket| {
